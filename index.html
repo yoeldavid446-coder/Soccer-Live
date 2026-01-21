@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fútbol Live Ultra-Pro</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+/* Tooltip */
+.tooltip { position: relative; display: inline-block; cursor: pointer; }
+.tooltip .tooltiptext {
+  visibility: hidden;
+  width: 220px;
+  background-color: #333;
+  color: #fff;
+  text-align: left;
+  padding: 8px;
+  border-radius: 6px;
+  position: absolute;
+  z-index: 10;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.3s;
+  font-size: 0.875rem;
+}
+.tooltip:hover .tooltiptext { visibility: visible; opacity: 1; }
+
+/* Pop-up goles */
+#notificacion {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  background: #f59e0b;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-weight: bold;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+  display: none;
+  z-index: 50;
+  animation: slideIn 0.5s;
+}
+@keyframes slideIn { from {opacity:0; transform: translateX(100px);} to {opacity:1; transform:translateX(0);} }
+</style>
+</head>
+<body class="bg-gray-100 p-4">
+
+<h1 class="text-3xl font-bold mb-6 text-center text-green-700">Fútbol Live Ultra-Pro ⚽</h1>
+
+<!-- Tabs por liga -->
+<div class="flex justify-center mb-4 gap-2 flex-wrap">
+  <button class="ligaTab px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700" data-liga="">Todas</button>
+  <button class="ligaTab px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700" data-liga="PL">Premier League</button>
+  <button class="ligaTab px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700" data-liga="PD">La Liga</button>
+  <button class="ligaTab px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700" data-liga="SA">Serie A</button>
+</div>
+
+<!-- Filtros -->
+<div class="flex justify-center gap-4 mb-4 flex-wrap">
+  <input type="text" id="equipoInput" placeholder="Buscar equipo" class="p-2 border rounded shadow w-64" />
+  <button id="btnActualizar" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 shadow">Actualizar</button>
+</div>
+
+<!-- Contenedor resultados -->
+<h2 class="text-2xl font-bold mb-2 text-center">Partidos en Vivo y Resultados</h2>
+<div id="resultados" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+
+<!-- Próximos partidos -->
+<h2 class="text-2xl font-bold my-4 text-center">Próximos Partidos</h2>
+<div id="proximos" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6"></div>
+
+<!-- Contenedor gráfico -->
+<div class="mt-6">
+  <h2 class="text-2xl font-bold mb-2 text-center">Goles por equipo</h2>
+  <canvas id="golesChart" class="w-full max-w-4xl mx-auto"></canvas>
+</div>
+
+<!-- Notificación de goles -->
+<div id="notificacion"></div>
+
+<script>
+const API_KEY = "ef5004711f61749d902b7c93621d7a08";
+const API_URL = "https://api.football-data.org/v4/matches";
+
+let currentLiga = "";
+let currentMatches = [];
+let previousScores = {};
+
+const resultadosDiv = document.getElementById("resultados");
+const proximosDiv = document.getElementById("proximos");
+const equipoInput = document.getElementById("equipoInput");
+const btnActualizar = document.getElementById("btnActualizar");
+const ligaTabs = document.querySelectorAll(".ligaTab");
+const notificacion = document.getElementById("notificacion");
+const ctx = document.getElementById("golesChart").getContext("2d");
+let chart;
+
+async function cargarResultados() {
+  resultadosDiv.innerHTML = "<p class='col-span-full text-center text-gray-700'>Cargando...</p>";
+  proximosDiv.innerHTML = "<p class='col-span-full text-center text-gray-700'>Cargando...</p>";
+  let url = API_URL;
+  if(currentLiga) url += `?competitions=${currentLiga}`;
+
+  try {
+    const res = await fetch(url, { headers: { "X-Auth-Token": API_KEY } });
+    const data = await res.json();
+    currentMatches = data.matches || [];
+    mostrarResultados();
+    mostrarProximos();
+    mostrarGrafico();
+  } catch (err) {
+    resultadosDiv.innerHTML = `<p class="col-span-full text-center text-red-500">Error al cargar resultados.</p>`;
+    proximosDiv.innerHTML = "";
+    console.error(err);
+  }
+}
+
+function mostrarResultados() {
+  const equipoFiltro = equipoInput.value.toLowerCase();
+  let matches = currentMatches.filter(m => 
+    m.status !== "SCHEDULED" && 
+    (!equipoFiltro || 
+    m.homeTeam.name.toLowerCase().includes(equipoFiltro) ||
+    m.awayTeam.name.toLowerCase().includes(equipoFiltro))
+  );
+
+  if(matches.length === 0){
+    resultadosDiv.innerHTML = "<p class='col-span-full text-center text-gray-600'>No hay resultados disponibles.</p>";
+    return;
+  }
+
+  resultadosDiv.innerHTML = "";
+  matches.forEach(match => {
+    const fecha = new Date(match.utcDate).toLocaleString();
+    const home = match.homeTeam.name;
+    const away = match.awayTeam.name;
+    const scoreH = match.score.fullTime.home ?? 0;
+    const scoreA = match.score.fullTime.away ?? 0;
+
+    let highlight = "";
+    const key = `${home}-${away}`;
+    if(previousScores[key] !== undefined && (previousScores[key].home !== scoreH || previousScores[key].away !== scoreA)) {
+      highlight = "ring-4 ring-yellow-400";
+      mostrarNotificacion(`${home} ${scoreH} - ${scoreA} ${away}`);
+    }
+    previousScores[key] = {home: scoreH, away: scoreA};
+
+    let bgColor = "bg-gray-100";
+    if(scoreH > scoreA) bgColor = "bg-green-100";
+    else if(scoreH < scoreA) bgColor = "bg-red-100";
+    else bgColor = "bg-yellow-100";
+
+    let enVivo = match.status === "IN_PLAY" ? `<span class="text-red-600 font-bold ml-2">EN VIVO</span>` : "";
+
+    resultadosDiv.innerHTML += `
+    <div class="p-4 rounded shadow ${bgColor} ${highlight} tooltip transform hover:scale-105 transition duration-300">
+      <h2 class="font-bold text-lg mb-1">${match.competition.name}${enVivo}</h2>
+      <p class="text-gray-600 mb-2">${fecha}</p>
+      <p class="text-xl font-semibold">${home} ${scoreH} - ${scoreA} ${away}</p>
+      <span class="tooltiptext">
+        Jornada: ${match.matchday ?? 'N/A'}<br>
+        Estado: ${match.status}<br>
+        Local: ${home} - Visitante: ${away}
+      </span>
+    </div>`;
+  });
+}
+
+function mostrarProximos() {
+  const equipoFiltro = equipoInput.value.toLowerCase();
+  let matches = currentMatches.filter(m => 
+    m.status === "SCHEDULED" &&
+    (!equipoFiltro || 
+    m.homeTeam.name.toLowerCase().includes(equipoFiltro) ||
+    m.awayTeam.name.toLowerCase().includes(equipoFiltro))
+  );
+
+  if(matches.length === 0){
+    proximosDiv.innerHTML = "<p class='col-span-full text-center text-gray-600'>No hay próximos partidos.</p>";
+    return;
+  }
+
+  proximosDiv.innerHTML = "";
+  matches.forEach(match => {
+    const fecha = new Date(match.utcDate).toLocaleString();
+    proximosDiv.innerHTML += `
+    <div class="p-4 rounded shadow bg-blue-100 tooltip transform hover:scale-105 transition duration-300">
+      <h2 class="font-bold text-lg mb-1">${match.competition.name}</h2>
+      <p class="text-gray-600 mb-2">${fecha}</p>
+      <p class="text-xl font-semibold">${match.homeTeam.name} vs ${match.awayTeam.name}</p>
+      <span class="tooltiptext">
+        Jornada: ${match.matchday ?? 'N/A'}<br>
+        Estado: ${match.status}<br>
+        Local: ${match.homeTeam.name} - Visitante: ${match.awayTeam.name}
+      </span>
+    </div>`;
+  });
+}
+
+function mostrarGrafico() {
+  const equipoGoles = {};
+  currentMatches.forEach(m => {
+    const home = m.homeTeam.name;
+    const away = m.awayTeam.name;
+    const scoreH = m.score.fullTime.home ?? 0;
+    const scoreA = m.score.fullTime.away ?? 0;
+    equipoGoles[home] = (equipoGoles[home] || 0) + scoreH;
+    equipoGoles[away] = (equipoGoles[away] || 0) + scoreA;
+  });
+
+  const labels = Object.keys(equipoGoles);
+  const data = Object.values(equipoGoles);
+
+  if(chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Goles totales',
+        data,
+        backgroundColor: 'rgba(34,197,94,0.7)',
+        borderColor: 'rgba(34,197,94,1)',
+        borderWidth: 1
+      }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, precision:0 } } }
+  });
+}
+
+function mostrarNotificacion(texto) {
+  notificacion.innerText = `¡Gol! ${texto}`;
+  notificacion.style.display = "block";
+  setTimeout(()=>{ notificacion.style.display="none"; }, 4000);
+}
+
+// Eventos
+btnActualizar.addEventListener("click", () => { mostrarResultados(); mostrarProximos(); });
+ligaTabs.forEach(tab => tab.addEventListener("click", () => { currentLiga = tab.dataset.liga; cargarResultados(); }));
+
+// Actualización automática cada 60 segundos
+setInterval(cargarResultados, 60000);
+
+// Carga inicial
+cargarResultados();
+</script>
+
+</body>
+</html>
